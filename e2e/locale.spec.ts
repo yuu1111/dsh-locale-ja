@@ -123,7 +123,7 @@ test.describe.serial("installed: load, activate, persist, deactivate", () => {
     expect(await page.locator(FONT_TAG).count()).toBe(0);
   });
 
-  test("Japanese settings actions describe their dialogs and cancellation", async ({
+  test("Japanese settings actions confirm risks, explain presets, and change the new-task default", async ({
     page,
   }, testInfo) => {
     await openApp(page);
@@ -162,26 +162,63 @@ test.describe.serial("installed: load, activate, persist, deactivate", () => {
     await expect(risk).toBeHidden();
     await expect(permission).toBeVisible();
 
-    await page.getByRole("button", { name: "プリセット", exact: true }).click();
-    await page.getByRole("button", { name: "複製: スタンダード", exact: true }).click();
-    const copy = page.getByRole("dialog", { name: /プリセットを複製/ });
-    await expect(copy).toContainText("後から変更できません");
-    await copy.getByRole("textbox", { name: "ID", exact: true }).fill("INVALID ID");
-    await expect(copy.getByRole("alert")).toContainText("小文字、数字、ハイフン");
-    await expect(copy.getByRole("button", { name: "作成", exact: true })).toBeDisabled();
+    await page.getByRole("button", { name: "エージェントプリセット", exact: true }).click();
+    const standardDefault = page.getByRole("button", {
+      name: "新規タスクの既定: スタンダードモード",
+      exact: true,
+    });
+    await expect(standardDefault).toHaveAttribute("aria-pressed", "true");
+    await expect(standardDefault).toBeDisabled();
+
+    // The shipped roster replaces duplication with read-only configuration and mode guides.
+    const view = page.getByRole("button", { name: "構成を表示: スタンダードモード", exact: true });
+    await view.click();
+    const configuration = page.getByRole("dialog", {
+      name: "構成を表示 · スタンダードモード",
+      exact: true,
+    });
+    await expect(configuration.locator("pre")).not.toBeEmpty();
+    await expect(configuration.getByRole("textbox")).toHaveCount(0);
     await checkSingleLineCopy(page, testInfo, "preset-labels", [
-      {
-        locator: copy.getByRole("heading"),
-        before: "プリセットをコピー新規 · コピー元 スタンダード",
-      },
-      {
-        locator: copy.getByRole("alert"),
-        before: "使用できるのは小文字、数字、ハイフンのみで、先頭は文字または数字にしてください。",
-      },
+      { locator: configuration.getByRole("heading"), before: "View configuration · Standard mode" },
     ]);
     await page.screenshot({ path: testInfo.outputPath("preset-ja.png") });
-    await copy.getByRole("button", { name: "キャンセル", exact: true }).click();
-    await expect(copy).toBeHidden();
+    await configuration.getByRole("button", { name: "閉じる", exact: true }).last().click();
+    await expect(configuration).toBeHidden();
+    await expect(view).toBeFocused();
+
+    await page
+      .getByRole("button", { name: "モードの説明: スタンダードモード", exact: true })
+      .click();
+    const guide = page.getByRole("dialog", { name: "スタンダードモード", exact: true });
+    const explanation = guide.getByRole("tab", { name: "モードの説明", exact: true });
+    const usage = guide.getByRole("tab", { name: "使い方", exact: true });
+    await expect(explanation).toHaveAttribute("aria-selected", "true");
+    await expect(
+      guide.getByRole("tabpanel", { name: "モードの説明", exact: true }),
+    ).not.toBeEmpty();
+    await usage.click();
+    await expect(usage).toHaveAttribute("aria-selected", "true");
+    await expect(guide.getByRole("tabpanel", { name: "使い方", exact: true })).not.toBeEmpty();
+    await expect(guide.getByRole("tabpanel", { name: "モードの説明", exact: true })).toBeHidden();
+    await guide.getByRole("button", { name: "閉じる", exact: true }).click();
+    await expect(guide).toBeHidden();
+    await expect(standardDefault).toHaveAttribute("aria-pressed", "true");
+
+    await page
+      .getByRole("button", { name: "新規タスクの既定に設定: ミニマルモード", exact: true })
+      .click();
+    const minimalDefault = page.getByRole("button", {
+      name: "新規タスクの既定: ミニマルモード",
+      exact: true,
+    });
+    await expect(minimalDefault).toHaveAttribute("aria-pressed", "true");
+    await expect(minimalDefault).toBeDisabled();
+    await page
+      .getByRole("button", { name: "新規タスクの既定に設定: スタンダードモード", exact: true })
+      .click();
+    await expect(standardDefault).toHaveAttribute("aria-pressed", "true");
+    await expect(standardDefault).toBeDisabled();
 
     await page.getByRole("button", { name: "一般", exact: true }).click();
     await openLanguageMenu(page, "日本語");
@@ -221,10 +258,13 @@ test.describe.serial("conversation: a mock-LLM turn renders the japanese chrome"
       page.getByText("これはモック LLM の応答です。", { exact: false }).first(),
     ).toBeVisible({ timeout: 30_000 });
 
+    const completed = page.getByRole("button", { name: /^完了までの時間：/ });
+    await expect(completed).toBeVisible();
+    await expect(page.getByRole("status").filter({ hasText: /^完了$/ })).toHaveText("完了");
+
     const usageButton = page.getByRole("button", { name: /^使用量 / });
     await expect(usageButton).toBeVisible();
     await checkSingleLineCopy(page, testInfo, "reply-labels", [
-      { locator: page.getByText("思考しました", { exact: true }), before: "思考済み" },
       { locator: usageButton, before: (await usageButton.innerText()).replace("使用量", "用量") },
     ]);
 

@@ -3,7 +3,7 @@
 ## Project aim
 
 `@fang2hou/dsh-locale-ja` is a **standard DSH client plugin package** for
-DeepSeek Harness (DSH) `0.1.5-rc.2`. It supports the `web` profile and browser
+DeepSeek Harness (DSH) `0.2.0-rc.2`. It supports the `web` profile and browser
 UI only. Keep the standard package shape:
 
 - `src/index.ts` is the Host half and exports an empty `apply()` so
@@ -22,7 +22,7 @@ Read [ARCHITECTURE.md](./ARCHITECTURE.md) and the relevant
 
 ## DSH references and contract sources
 
-DSH iterates fast (developer preview). This plugin pins `0.1.5-rc.2`; when
+DSH iterates fast (developer preview). This plugin pins `0.2.0-rc.2`; when
 bumping, re-verify against the real runtime first. When developing outside a
 DSH session, rebuild context from these sources instead of guessing:
 
@@ -139,7 +139,9 @@ Local ground truth (always prefer over memory or naming guesses):
    `dsh.bundle.patch`, and the declaration output synchronized.
 3. Keep dictionary keys aligned with the shipped declarations, preserve
    placeholders exactly, and run `pnpm typecheck` after dictionary or DSH
-   version changes.
+   version changes. For DSH upgrades, also run `pnpm drift --dsh <version>`
+   against the target web composition to check runtime-only keys and every
+   English placeholder multiset.
 4. Review the diff for accidental value imports, guessed Slot contracts,
    broadened side effects, missing disposers, and edits to generated `lib/`.
 5. Run the narrowest relevant validation, then finish with:

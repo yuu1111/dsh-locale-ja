@@ -68,6 +68,14 @@ const RUNTIME_SCANNED_NAMESPACES: { ns: string; pkg: string }[] = [
     pkg: "@deepseek-ai/dsh-client-ui-sidebar-documentpreview",
   },
   {
+    ns: "sidebarOffice",
+    pkg: "@deepseek-ai/dsh-client-ui-sidebar-documentpreview",
+  },
+  {
+    ns: "sidebarExcel",
+    pkg: "@deepseek-ai/dsh-client-ui-sidebar-documentpreview",
+  },
+  {
     ns: "sidebarPdf",
     pkg: "@deepseek-ai/dsh-client-ui-sidebar-documentpreview",
   },
@@ -83,23 +91,28 @@ function parseArgs(argv: string[]): string {
 
 function installWebTree(dir: string, version: string): void {
   console.log(`[drift] installing ${WEB_APP_PACKAGE}@${version} into ${dir}`);
+  if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(version)) {
+    throw new Error(`DSH version must be an exact semantic version: ${JSON.stringify(version)}`);
+  }
+  const args = [
+    "install",
+    "--ignore-scripts",
+    "--no-audit",
+    "--no-fund",
+    "--loglevel=error",
+    `${WEB_APP_PACKAGE}@${version}`,
+    `${NAMESPACE_MAP_PACKAGE}@${version}`,
+  ];
+  const windows = process.platform === "win32";
   const result = spawnSync(
-    "npm",
-    [
-      "install",
-      "--ignore-scripts",
-      "--no-audit",
-      "--no-fund",
-      "--loglevel=error",
-      `${WEB_APP_PACKAGE}@${version}`,
-      `${NAMESPACE_MAP_PACKAGE}@${version}`,
-    ],
-    { cwd: dir, encoding: "utf8" },
+    windows ? (process.env.ComSpec ?? "cmd.exe") : "npm",
+    windows ? ["/d", "/s", "/c", `npm ${args.join(" ")}`] : args,
+    { cwd: dir, encoding: "utf8", windowsVerbatimArguments: windows },
   );
   if (result.status !== 0) {
     throw new Error(
       `npm install ${WEB_APP_PACKAGE}@${version} failed (exit ${result.status}):\n${
-        result.stderr ?? result.stdout ?? ""
+        result.error?.message ?? result.stderr ?? result.stdout ?? ""
       }`,
     );
   }
@@ -260,7 +273,11 @@ function runtimeScannedKeys(root: string): Map<string, string[]> {
  * identifier, possibly referencing module constants), and the
  * `for (const [locale, dict] of dictionaries)` array form.
  */
-function registerCallKeys(text: string, ns: string): string[] {
+function registerCallKeys(
+  text: string,
+  ns: string,
+  onDictionary?: (dictionary: Record<string, string>, locale: string) => void,
+): string[] {
   const keys = new Set<string>();
   // Module-scope string/array/object constants the call sites may reference.
   const consts = new Map<string, unknown>();
@@ -295,9 +312,10 @@ function registerCallKeys(text: string, ns: string): string[] {
     const value = resolve(argument);
     return value === ns;
   };
-  const addDict = (value: unknown): void => {
+  const addDict = (value: unknown, locale: string): void => {
     if (typeof value !== "object" || value === null || Array.isArray(value)) return;
     for (const key of Object.keys(value)) keys.add(key);
+    onDictionary?.(value as Record<string, string>, locale);
   };
   for (const match of text.matchAll(/(?:locale|ctx\.locale)\.register\(/g)) {
     const argumentsText = balancedLiteral(text, match.index + match[0].length - 1, false);
@@ -307,13 +325,13 @@ function registerCallKeys(text: string, ns: string): string[] {
     const second = args[1] ?? "";
     const perLocale = /^"(zh|en)"$/.exec(second);
     if (perLocale) {
-      addDict(resolve(args[2] ?? ""));
+      addDict(resolve(args[2] ?? ""), perLocale[1]!);
       continue;
     }
     // `{ zh, en }` — shorthand identifiers or renamed `{ zh: X, en: Y }`.
-    for (const part of splitArguments(second.replace(/^\{|\}$/g, ""))) {
-      const named = /^(?:zh|en)\s*:\s*([$A-Za-z_][\w$]*)$/.exec(part);
-      addDict(resolve(named ? named[1]! : part));
+    const dictionaries = resolve(second);
+    if (typeof dictionaries === "object" && dictionaries !== null) {
+      for (const [locale, dictionary] of Object.entries(dictionaries)) addDict(dictionary, locale);
     }
   }
   // The `dictionaries` array form: register(LOCALE_NS, locale, dict) in a
@@ -326,7 +344,7 @@ function registerCallKeys(text: string, ns: string): string[] {
     const value = resolve(array);
     if (!Array.isArray(value) || !declaresNamespace) continue;
     for (const pair of value) {
-      if (Array.isArray(pair) && (pair[0] === "zh" || pair[0] === "en")) addDict(pair[1]);
+      if (Array.isArray(pair) && (pair[0] === "zh" || pair[0] === "en")) addDict(pair[1], pair[0]);
     }
   }
   return [...keys];
@@ -391,6 +409,59 @@ function splitArguments(argumentText: string): string[] {
   return parts;
 }
 
+function upstreamEnglish(
+  root: string,
+  upstream: Map<string, string[]>,
+): Map<string, Record<string, string>> {
+  const english = new Map<string, Record<string, string>>();
+  const scope = path.join(root, "node_modules", "@deepseek-ai");
+  for (const pkg of fs.readdirSync(scope)) {
+    const bundle = path.join(scope, pkg, "lib", "client.js");
+    if (!fs.existsSync(bundle)) continue;
+    const text = fs.readFileSync(bundle, "utf8");
+    for (const ns of upstream.keys()) {
+      if (!text.includes(JSON.stringify(ns))) continue;
+      registerCallKeys(text, ns, (dictionary, locale) => {
+        if (locale !== "en") return;
+        const merged = english.get(ns) ?? {};
+        Object.assign(merged, dictionary);
+        english.set(ns, merged);
+      });
+    }
+  }
+  for (const [ns, keys] of upstream) {
+    const dictionary = english.get(ns);
+    const unresolved = keys.filter((key) => typeof dictionary?.[key] !== "string");
+    if (unresolved.length > 0) {
+      throw new Error(`upstream English extraction failed for ${ns}: ${unresolved.join(", ")}`);
+    }
+  }
+  return english;
+}
+
+function placeholderDrift(
+  plugin: Record<string, Record<string, string>>,
+  english: Map<string, Record<string, string>>,
+): string[] {
+  const failures: string[] = [];
+  const placeholders = (text: string): string =>
+    (text.match(/\{\w+\}/g) ?? []).toSorted().join(", ");
+  for (const [ns, dictionary] of english) {
+    for (const [key, value] of Object.entries(dictionary)) {
+      const translated = plugin[ns]?.[key];
+      if (typeof translated !== "string") continue;
+      const expected = placeholders(value);
+      const actual = placeholders(translated);
+      if (actual !== expected) {
+        failures.push(
+          `${ns}.${key}: placeholder drift (en: [${expected}], ja: [${actual}]); English: ${JSON.stringify(value)}`,
+        );
+      }
+    }
+  }
+  return failures;
+}
+
 function diff(
   plugin: Record<string, Record<string, string>>,
   upstream: Map<string, string[]>,
@@ -437,7 +508,10 @@ try {
     `[drift] upstream: ${upstream.size} namespaces, ${[...upstream.values()].reduce((n, keys) => n + keys.length, 0)} keys; plugin: ${Object.keys(DICTS).length} namespaces`,
   );
 
-  const failures = diff(DICTS, upstream);
+  const failures = [
+    ...diff(DICTS, upstream),
+    ...placeholderDrift(DICTS, upstreamEnglish(root, upstream)),
+  ];
   if (failures.length > 0) {
     failed = true;
     console.error(`\ndictionary drift against @deepseek-ai/dsh@${version}:`);

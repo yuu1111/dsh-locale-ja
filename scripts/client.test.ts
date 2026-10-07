@@ -1,9 +1,11 @@
 // Integration test for the built browser bundle (`lib/client.js`): evaluates
 // it through `window.__ModuleLoader__.load` the way the shell does, against
-// a stand-in locale service mirroring the shipped `LocaleRuntime`.
+// lifecycle stand-ins and the shipped `LocaleRuntime` translation path.
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { LocaleRuntime } from "@deepseek-ai/dsh-client-locale/client";
+import { DICTS } from "../src/client/dictionaries.ts";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const { name: PACKAGE_ID } = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8")) as {
@@ -11,7 +13,7 @@ const { name: PACKAGE_ID } = JSON.parse(readFileSync(resolve(root, "package.json
 };
 const bundle = readFileSync(resolve(root, "lib/client.js"), "utf8");
 
-const NAMESPACE_COUNT = 42;
+const NAMESPACE_COUNT = Object.keys(DICTS).length;
 
 let failures = 0;
 
@@ -38,8 +40,8 @@ interface DocumentStub {
   head: { append(tag: StyleTagStub): void };
 }
 
-interface WindowStub {
-  __ModuleLoader__: { load(entry: LoaderEntry): void };
+interface WindowStub<T = ClientPlugin> {
+  __ModuleLoader__: { load(entry: LoaderEntry<T>): void };
 }
 
 interface ClientPlugin {
@@ -47,9 +49,9 @@ interface ClientPlugin {
   apply: (ctx: unknown) => void;
 }
 
-interface LoaderEntry {
+interface LoaderEntry<T = ClientPlugin> {
   id: string;
-  factory: (require: (specifier: string) => unknown) => ClientPlugin;
+  factory: (require: (specifier: string) => unknown) => T;
 }
 
 interface ContextStub {
@@ -378,6 +380,139 @@ disposers = [];
 plugin.apply(ctxOf(locale));
 assert(locale.getLocale().active === "ja", "boots straight into Japanese");
 for (const dispose of disposers.toReversed()) dispose();
+
+console.log("shipped LocaleRuntime: 0.2.0 UI copy and placeholders");
+interface RuntimeModule {
+  LocaleRuntime: new (
+    ctx: { emit(event: string, snapshot: Snapshot): void },
+    host: undefined,
+    bootstrap: { languages: string[]; preference: string | null },
+  ) => Pick<
+    LocaleRuntime,
+    "bind" | "getLocale" | "register" | "addLanguage" | "subscribe" | "setLocale"
+  >;
+}
+const runtimeEntries: LoaderEntry<RuntimeModule>[] = [];
+const runtimeWindow: WindowStub<RuntimeModule> = {
+  __ModuleLoader__: { load: (entry) => runtimeEntries.push(entry) },
+};
+const runtimeBundle = readFileSync(
+  fileURLToPath(import.meta.resolve("@deepseek-ai/dsh-client-locale/client")),
+  "utf8",
+);
+// eslint-disable-next-line no-new-func -- test the shipped envelope, not a copied lookup implementation
+const evaluateRuntime = new Function("window", runtimeBundle) as (
+  window: WindowStub<RuntimeModule>,
+) => void;
+evaluateRuntime(runtimeWindow);
+assert(
+  runtimeEntries.length === 1 && runtimeEntries[0]?.id === "@deepseek-ai/dsh-client-locale",
+  "loads the shipped locale module through its loader envelope",
+);
+const runtimeEntry = runtimeEntries[0];
+if (runtimeEntry === undefined) throw new Error("the locale loader registered no module");
+const runtimeModules = new Set([
+  "react/jsx-runtime",
+  "react",
+  "@deepseek-ai/dsh-client-ui-primitives",
+  "@deepseek-ai/dsh-client-store",
+]);
+const { LocaleRuntime: ShippedLocaleRuntime } = runtimeEntry.factory((specifier) => {
+  if (!runtimeModules.has(specifier)) {
+    throw new Error("unexpected locale runtime dependency: " + specifier);
+  }
+  // UI dependencies stay inert: this test constructs the registry, not the settings component.
+  return Object.freeze({});
+});
+const runtimeEvents: string[] = [];
+const runtime = new ShippedLocaleRuntime(
+  { emit: (_event, snapshot) => runtimeEvents.push(snapshot.active) },
+  undefined,
+  { languages: ["en"], preference: "ja" },
+);
+const runtimeDisposers: Array<() => void> = [];
+const fallbackDisposer = runtime.register("conversation", "en", {
+  "runtime.fallback": "English fallback {name}",
+});
+const conversationTranslate = runtime.bind("conversation" as string);
+assert(runtime.getLocale().active === "en", "stored ja awaits the plugin's language registration");
+plugin.apply({
+  locale: runtime,
+  effect(fn: () => () => void) {
+    runtimeDisposers.push(fn());
+  },
+});
+assert(runtime.getLocale().active === "ja", "the shipped runtime restores Japanese on activation");
+assert(runtimeEvents.at(-1) === "ja", "the shipped runtime publishes the Japanese selection");
+
+const copyChecks = [
+  { ns: "common", key: "copy.value", placeholders: [] },
+  { ns: "settings.account", key: "loginTitle", placeholders: [] },
+  {
+    ns: "conversation",
+    key: "tool.title.openTerminal",
+    expected: "ターミナルを開く",
+    placeholders: [],
+  },
+  {
+    ns: "conversation",
+    key: "todo.diff.updatedItem",
+    expected: "状態を変更",
+    placeholders: [],
+  },
+  {
+    ns: "conversation",
+    key: "detail.tasks.count",
+    expected: "チームタスク {count}件",
+    placeholders: ["count"],
+  },
+  { ns: "workspace", key: "menu.pinSession", placeholders: [] },
+  { ns: "workspace", key: "archive.confirm.desc", placeholders: ["title"] },
+  { ns: "conversation", key: "attachment.dropDesc", placeholders: ["count", "size"] },
+];
+const params = { count: 3, size: "20 MB", title: "Regression session" };
+for (const { ns, key, placeholders, expected } of copyChecks) {
+  const translate = runtime.bind(ns);
+  const template = translate(key);
+  const label = ns + "." + key;
+  if (expected !== undefined) assert(template === expected, label + " keeps its migrated UI copy");
+  assert(/[\u3040-\u30ff\u3400-\u9fff]/u.test(template), label + " resolves to Japanese UI copy");
+  const actualPlaceholders = [...template.matchAll(/\{(\w+)\}/g)].map((match) => match[1]).sort();
+  assert(
+    JSON.stringify(actualPlaceholders) === JSON.stringify(placeholders.toSorted()),
+    label + " preserves its declared placeholders",
+  );
+  if (placeholders.length > 0) {
+    const translated = translate(key, params);
+    assert(
+      !/\{\w+\}/u.test(translated) &&
+        placeholders.every((name) =>
+          translated.includes(String(params[name as keyof typeof params])),
+        ),
+      label + " interpolates every placeholder through the shipped runtime",
+    );
+  }
+}
+assert(
+  conversationTranslate("runtime.fallback", { name: "reader" }) === "English fallback reader",
+  "Japanese missing keys follow the declared English fallback with interpolation",
+);
+assert(
+  runtime.bind("common")("copy.value") === "値をコピー",
+  "shared value-copy action stays Japanese",
+);
+assert(
+  conversationTranslate("copy.value") === runtime.bind("common")("copy.value"),
+  "feature namespaces resolve the new shared Japanese vocabulary",
+);
+for (const dispose of runtimeDisposers.toReversed()) dispose();
+assert(runtime.getLocale().active === "en", "the shipped runtime falls back on plugin teardown");
+assert(
+  conversationTranslate("tool.title.openTerminal") === "tool.title.openTerminal",
+  "teardown removes migrated Japanese copy from already-bound translators",
+);
+assert(dom.tags.length === 0, "the shipped runtime lifecycle releases the Japanese stylesheet");
+fallbackDisposer();
 
 if (failures > 0) {
   console.error(`\nclient bundle test FAILED (${failures})`);
