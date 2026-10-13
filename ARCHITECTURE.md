@@ -63,11 +63,12 @@ The 0.2 compatibility baseline is recorded in
 
 6. **The Japanese font override must be locale-scoped and token-level.**
    `src/client/font.ts` must own a style tag that exists only while `ja` is
-   active and overrides `--dsw-font-family` on `:root`, using system-bundled
-   faces and removing the tag on every teardown; see
+   active and supplies UI, brand, and code font tokens on `:where(:root,body)`,
+   using system-bundled faces and removing the tag on every teardown; see
    [ADR-0004](./docs/adr/0004-japanese-fonts-via-the-base-font-token.md).
-   One base token changes the UI without styling product elements, changing the
-   theme, or fetching a web font.
+   Zero specificity keeps higher-specificity `!important` font settings
+   (including `dsh-ui-font`) ahead of these defaults regardless of stylesheet order.
+   The brand stack follows the resolved UI token rather than a fixed stack.
 
 7. **Dictionaries must use the platform's own compile-time key unions whenever
    they are exposed.** `src/client/dictionaries.ts` must keep local unions only
@@ -97,7 +98,7 @@ The 0.2 compatibility baseline is recorded in
 - `src/client/locale-extension.ts` — registers 日本語 through the public
   `addLanguage` language-pack API and hands back the runtime's disposer.
 - `src/client/font.ts` — creates, synchronizes, and disposes the
-  plugin-owned, locale-scoped style tag for `--dsw-font-family`.
+  plugin-owned, locale-scoped style tag for UI, brand, and code font defaults.
 - `src/client/dictionaries.ts` — defines the 53 Japanese namespace
   dictionaries and their platform or documented local key unions.
 - `scripts/build.ts` — emits declarations, the Host ESM entry, and the

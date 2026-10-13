@@ -1,14 +1,23 @@
 const PLUGIN_ID = "@fang2hou/dsh-locale-ja";
 const TAG_ID = `${PLUGIN_ID}/japanese-font.css`;
 
-// Latin faces first, then Japanese faces, so kana and kanji render with
-// Japanese glyph shapes; every family is OS-bundled.
 const FONT_STACK =
   '-apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Sans", ' +
-  '"Hiragino Kaku Gothic ProN", "Yu Gothic UI", "Meiryo", "Noto Sans JP", sans-serif';
+  '"Hiragino Kaku Gothic ProN", "Yu Gothic UI", "Yu Gothic", "Meiryo", ' +
+  '"Noto Sans CJK JP", "Noto Sans JP", sans-serif';
 
-// `!important` stays ahead of shell stylesheets inserted after this tag.
-const CSS = `:root{--dsw-font-family:${FONT_STACK} !important;}`;
+const CODE_STACK =
+  "'SF Mono', 'JetBrains Mono', 'Fira Code', Consolas, 'Liberation Mono', " +
+  "Menlo, Courier, 'Yu Gothic UI', 'Meiryo', 'Noto Sans CJK JP'";
+
+// Body-local theme tokens defeat root inheritance. Zero specificity lets
+// explicit !important font settings win even when this tag is reinserted.
+const CSS =
+  ":where(:root,body){" +
+  `--dsw-font-family:${FONT_STACK} !important;` +
+  "--dsw-font-family-brand:'Montserrat',var(--dsw-font-family) !important;" +
+  `--ds-font-family-code:${CODE_STACK} !important;` +
+  "}";
 
 export interface FontStylesheet {
   sync: (japanese: boolean) => void;

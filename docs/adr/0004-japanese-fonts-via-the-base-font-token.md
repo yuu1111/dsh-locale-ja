@@ -47,3 +47,32 @@ shipped CSS-module bundles. The contribution is registered through
   only when Japanese is active.
 - One locale-scoped stylesheet owns the effect, avoids a network dependency,
   and is reversed on locale changes, plugin updates, or removal.
+
+## Amendment: body-local defaults and user font precedence
+
+The font fix from `yukieiji/dsh-locale-ja` at
+`aa82d82cf2b5c5f07448d80942c655b2efb3bf31` expands the Japanese stack and
+adds code and brand defaults. DSH `0.2.0-rc.2` also projects theme tokens
+onto `body` through the layout presenter; a root-only override cannot
+replace a body-local value.
+
+Keep those improvements, but target `:where(:root,body)` instead of
+`:root,body`. The declarations remain `!important` to beat the normal
+inline theme tokens, while zero selector specificity lets explicit
+`!important` font rules win independently of insertion order. The current
+`dsh-ui-font` uses `:root,body` with `!important`, so its UI and code choices
+stay active through locale switches, setting changes, and plugin reloads.
+The brand default keeps Montserrat first and reads `var(--dsw-font-family)`
+so its Japanese fallback follows the user-selected UI stack as well.
+
+Do not discover other plugins by inspecting runtime objects, observing DOM
+mutations, or polling. The CSS cascade provides the required precedence
+without a dependency, additional settings, or lifecycle coordination.
+A rule without `!important` does not override these defaults; this is not
+a generic font-plugin detection mechanism.
+
+`e2e/font.spec.ts` checks computed fonts in Chromium using the built client
+bundle, body-local theme defaults, and the current `dsh-ui-font` CSS shape.
+It covers both insertion orders, repeated locale switches, in-place user
+setting updates, body-local theme updates, partial overrides, stylesheet removal,
+teardown, and plugin reactivation with Japanese already active.

@@ -143,6 +143,22 @@ It does not validate Japanese meaning or placeholders inside string values;
 review those against the shipped source strings and their UI call sites.
 
 
+## Browser font regression checks
+
+The font cascade can be checked without Docker or a running DSH server:
+
+```bash
+pnpm build
+pnpm exec playwright test --config e2e/playwright.config.ts e2e/font.spec.ts
+```
+
+These checks load the built client bundle in an isolated Chromium page. They
+verify Japanese body-local defaults and the precedence of the current
+`dsh-ui-font` CSS rules in both insertion orders, through locale changes,
+setting updates, partial overrides, removal, and teardown. They check computed
+font stacks, not whether each named font is installed or which glyph face
+is ultimately used by the OS.
+
 ## End-to-end suite
 
 `mise run e2e` (`e2e/run-e2e.ts`):
